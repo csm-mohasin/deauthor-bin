@@ -19,23 +19,24 @@ jobs:
             | tar -xz -C /usr/local/bin arduino-cli
           arduino-cli version
 
-      - name: Install ESP8266 core 2.7.4
+      - name: Install Spacehuhn Deauther board package
         run: |
           arduino-cli config init
           arduino-cli config add board_manager.additional_urls \
-            https://arduino.esp8266.com/stable/package_esp8266com_index.json
+            https://raw.githubusercontent.com/SpacehuhnTech/arduino/main/package_spacehuhn_index.json
           arduino-cli core update-index
           arduino-cli core install esp8266:esp8266@2.7.4
+          arduino-cli core install deauther:esp8266
 
       - name: Rename sketch file
         run: |
           mkdir -p CSM_Deauther
           cp dea.txt CSM_Deauther/CSM_Deauther.ino
 
-      - name: Compile
+      - name: Compile with Spacehuhn SDK
         run: |
           arduino-cli compile \
-            --fqbn esp8266:esp8266:nodemcuv2 \
+            --fqbn deauther:esp8266:nodemcu \
             --output-dir build/ \
             CSM_Deauther/CSM_Deauther.ino
 
