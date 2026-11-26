@@ -268,7 +268,7 @@ void doScan() {
     aps[apCount].selected = false;
     String s = WiFi.SSID(i);
     s.toCharArray(aps[apCount].ssid, SSID_MAX_LEN);
-    WiFi.BSSID(i, aps[apCount].bssid);
+    memcpy(aps[apCount].bssid, WiFi.BSSID(i), 6);
     apCount++;
   }
 
