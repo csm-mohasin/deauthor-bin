@@ -1,0 +1,45 @@
+name: Build CSM Deauther
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install arduino-cli
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: Install ESP8266 core 2.7.4
+        run: |
+          arduino-cli config init
+          arduino-cli config add board_manager.additional_urls \
+            https://arduino.esp8266.com/stable/package_esp8266com_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp8266:esp8266@2.7.4
+
+      - name: Rename sketch file
+        run: |
+          mkdir -p CSM_Deauther
+          cp dea.txt CSM_Deauther/CSM_Deauther.ino
+
+      - name: Compile
+        run: |
+          arduino-cli compile \
+            --fqbn esp8266:esp8266:nodemcuv2 \
+            --output-dir build/ \
+            CSM_Deauther/CSM_Deauther.ino
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CSM_Deauther_bin
+          path: build/*.bin
