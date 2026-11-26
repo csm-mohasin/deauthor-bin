@@ -36,7 +36,7 @@ jobs:
       - name: Compile with Spacehuhn SDK
         run: |
           arduino-cli compile \
-            --fqbn deauther:esp8266:nodemcu \
+            --fqbn deauther:esp8266:nodemcuv2 \
             --output-dir build/ \
             CSM_Deauther/CSM_Deauther.ino
 
